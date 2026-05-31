@@ -1,0 +1,210 @@
+# marmot-agent
+
+A local voice-first AI agent with tool use. Push-to-talk (or text) → STT (whisper.cpp) → LLM with tools (ReAct/multi-turn) → TTS spoken response. Borrows recording + hotkey + config patterns from [spark-dictate](https://github.com/...).
+
+## Features
+
+- Hold **Right Option/Alt** to record (cross-platform, same as spark-dictate)
+- Audio sent to local Flask server → whisper.cpp for transcription
+- Full conversation context (rolling, ~150k token default)
+- LLM (any OpenAI-compatible endpoint) with tool calling support
+- Built-in `run_terminal` tool (bash commands executed on host, results fed back to LLM)
+- Multiple tool turns per utterance (agent can explore, run commands, iterate before final answer)
+- Final response spoken via local TTS (Kokoro-style `/audio/speech`) and returned
+- Text response printed + copied to clipboard
+- `-m "text here"` client flag for quick text-only queries (no mic, exits after one response)
+- Simple Flask server with `/connect`, `/health`, `/reset`
+
+## Architecture
+
+```
+Client (mic hotkey or -m)          Marmot Server (Flask)          External Services
+─────────────────────────          ────────────────────          ─────────────────
+record (16kHz + gain + pad)  ──▶   /connect (audio or text)
+                                   │
+                                   ├──▶ whisper.cpp /v1/audio/transcriptions
+                                   │         (STT)
+                                   │
+                                   ├──▶ LLM /v1/chat/completions
+                                   │      (tools + full context, multi-turn)
+                                   │         run_terminal tool
+                                   │
+                                   └──▶ TTS /v1/audio/speech
+                                         (spoken reply)
+                                   │
+◀── JSON {text, audio:base64} ◀──── response
+```
+
+Client plays audio, prints text, copies to clipboard.
+
+## Requirements
+
+**Client machine:**
+- Python 3.10+
+- Microphone (for hotkey mode)
+- Same clipboard tools as spark-dictate (`wl-clipboard` or `xclip` on Linux)
+
+**Servers (usually on powerful box / DGX Spark etc.):**
+- whisper.cpp server (CUDA) on port 8025 (or your choice)
+- OpenAI-compatible LLM server (vLLM, llama.cpp server, Ollama OpenAI compat, etc.)
+- Kokoro FastAPI or other TTS exposing `/v1/audio/speech` (optional but recommended)
+
+## Quick Setup
+
+### 1. Whisper + LLM + TTS (external)
+
+See spark-dictate README for whisper.cpp + Kokoro examples. Any compatible servers work.
+
+### 2. Marmot Server
+
+```bash
+cd server
+./start_server.sh
+```
+
+First run will interactively ask for:
+- whisper.cpp URL
+- LLM base URL + model
+- TTS base URL + voice (optional)
+
+Settings saved to `server/code/config.json`.
+
+Edit `SYSTEM_PROMPT` or `MAX_CONTEXT_TOKENS` in the json if desired.
+
+### 3. Client
+
+```bash
+cd client
+./start_client.sh
+```
+
+First run prompts for Marmot server address (e.g. `localhost:5000` or remote IP).
+
+## Usage
+
+### Voice Mode (default)
+
+1. Run client
+2. Hold **Right Option (⌥)** / **Right Alt**
+3. Speak your request (can be complex, involve tools)
+4. Release → server transcribes, thinks, may use tools (e.g. check files, run commands), speaks final answer
+5. Hear response + see text + clipboard ready
+
+Examples you can say:
+- "what processes are using the most memory?"
+- "list the files in my home directory and summarize the largest ones"
+- "run a quick disk space check and tell me if anything is over 80% full"
+- "read my todo list and suggest the next three priorities"
+
+### Text / Testing Mode
+
+```bash
+./start_client.sh -m "show me the top 5 processes by cpu"
+./start_client.sh -m "what is the current hostname and kernel?"
+```
+
+Useful for debugging without touching the mic, and for scripting.
+
+### API
+
+`POST /connect`
+
+- `multipart/form-data` with `file=@recording.wav` → audio path
+- `application/json` `{ "text": "your question" }` → text path
+
+Returns:
+
+```json
+{
+  "text": "Here is the answer...",
+  "audio": "UklGRiQ...base64 wav..."   // or null
+}
+```
+
+Other endpoints:
+- `GET /health`
+- `POST /reset` (clears conversation history)
+
+### Testing with curl
+
+Here are handy `curl` commands for testing the server directly (especially useful during development or when the Python client isn't available).
+
+**Health check**
+```bash
+curl -s http://localhost:5000/health | jq
+```
+
+**Send a text query** (recommended for quick tests)
+```bash
+curl -s -X POST http://localhost:5000/connect \
+  -H "Content-Type: application/json" \
+  -d '{"text": "what is the current hostname and kernel version?"}' | jq
+```
+
+**Send text and print only the response** (clean output)
+```bash
+curl -s -X POST http://localhost:5000/connect \
+  -H "Content-Type: application/json" \
+  -d '{"text": "list the top 5 processes by memory usage"}' | jq -r '.text'
+```
+
+**Send text and save the spoken audio reply**
+```bash
+curl -s -X POST http://localhost:5000/connect \
+  -H "Content-Type: application/json" \
+  -d '{"text": "tell me a short joke about marmots"}' \
+  | jq -r '.audio' | base64 -d > /tmp/marmot_reply.wav \
+  && echo "Saved audio to /tmp/marmot_reply.wav"
+```
+
+**Send an audio file** (multipart upload)
+```bash
+curl -s -X POST http://localhost:5000/connect \
+  -F "file=@/path/to/your/recording.wav" | jq -r '.text'
+```
+
+**Reset conversation context**
+```bash
+curl -s -X POST http://localhost:5000/reset | jq
+```
+
+> **Tip**: Replace `localhost:5000` with your server's address if it's running elsewhere.  
+> `jq` is recommended for readable JSON (install with `sudo apt install jq` or equivalent).  
+> If TTS is disabled on the server, the `"audio"` field will be `null`.
+
+## Tool Use (ReAct style)
+
+The server implements a loop similar to the example in the project prompt:
+
+1. Send current context + new user turn + tools schema to LLM
+2. If LLM returns `tool_calls`, execute them locally (`run_terminal` runs the bash via subprocess with timeout)
+3. Feed results back as `role: tool` messages
+4. Repeat until LLM produces a plain `content` response (no tool_calls)
+5. That final text becomes the spoken + returned answer
+
+Only the original user utterance and the final assistant text are appended to the persistent rolling context (internal tool scratchpad is discarded per turn to control token usage).
+
+## Configuration
+
+All server settings live in `server/code/config.json` (created on first run).
+
+Key fields:
+- `MAX_CONTEXT_TOKENS`: 150000 (approx char/3 estimate; trims oldest turns)
+- `SYSTEM_PROMPT`: customize agent personality
+- `TOOL_TIMEOUT`: seconds per `run_terminal` call (default 30)
+- `MAX_TOOL_TURNS`: safety cap on ReAct iterations (default 8)
+
+Client: `client/code/client_config.json` (only server address + gain).
+
+## Security Note
+
+The `run_terminal` tool gives the LLM real shell access to your machine. Only run this against trusted local models and review what it does. Consider running the whole stack in a container or VM for experiments.
+
+## Differences from spark-dictate
+
+- spark-dictate: mostly dictation + optional one-shot "question ..." LLM query
+- marmot-agent: full agent loop with tools, multi-turn reasoning, persistent conversation, voice I/O wrapper around the agent
+
+## License
+
+Unlicense (public domain) — same as spark-dictate.

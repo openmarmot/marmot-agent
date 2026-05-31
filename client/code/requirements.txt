@@ -1,0 +1,6 @@
+# Marmot client requirements (borrowed + adapted from spark-dictate)
+requests==2.34.2
+pynput==1.8.2
+sounddevice==0.5.5
+numpy==2.4.5
+# wave, tempfile, subprocess, platform, json, argparse, base64 are in stdlib
