@@ -4,7 +4,8 @@ Marmot Agent Client
 
 - Hold Right Option/Alt to record -> send audio to local Marmot server /connect
 - Server does STT + LLM (tools) + TTS
-- Plays returned audio, prints text, copies text to clipboard
+- Client receives transcription + AI response + audio
+- Prints "You:" (transcription) then "Marmot:" reply, plays audio, copies reply to clipboard
 - -m "text" flag: send text directly, play/print/copy response, exit (for testing)
 """
 
@@ -138,20 +139,25 @@ def send_to_marmot(audio_path=None, text=None):
 
         if resp.status_code != 200:
             print(f"Server error {resp.status_code}: {resp.text[:200]}")
-            return None, None
+            return None, None, None
 
         data = resp.json()
+        transcription = data.get("transcription", "")
         resp_text = data.get("text", "")
         audio_b64 = data.get("audio")
-        return resp_text, audio_b64
+        return transcription, resp_text, audio_b64
     except Exception as e:
         print("Send failed:", e)
-        return None, None
+        return None, None, None
 
-def handle_response(resp_text, audio_b64):
+def handle_response(transcription, resp_text, audio_b64):
     if resp_text is None:
         return
-    print(f"\n🐹 Marmot: {resp_text}\n")
+
+    if transcription:
+        print(f"🗣️  You: {transcription}")
+
+    print(f"🐹 Marmot: {resp_text}\n")
     copy_to_clipboard(resp_text)
     if audio_b64:
         try:
@@ -232,8 +238,8 @@ def process_and_send():
             wf.writeframes(padded.tobytes())
 
     try:
-        text, audio_b64 = send_to_marmot(audio_path=tmp_path)
-        handle_response(text, audio_b64)
+        transcription, resp_text, audio_b64 = send_to_marmot(audio_path=tmp_path)
+        handle_response(transcription, resp_text, audio_b64)
     finally:
         try:
             os.unlink(tmp_path)
@@ -261,8 +267,8 @@ def signal_handler(sig, frame):
 # ====================== TEXT MESSAGE MODE (-m) ======================
 def send_message_mode(message: str):
     print(f"🐹 Sending message: {message}")
-    text, audio_b64 = send_to_marmot(text=message)
-    handle_response(text, audio_b64)
+    transcription, resp_text, audio_b64 = send_to_marmot(text=message)
+    handle_response(transcription, resp_text, audio_b64)
     print("Done.")
 
 # ====================== MAIN ======================

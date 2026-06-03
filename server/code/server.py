@@ -4,9 +4,11 @@ Marmot Agent Server
 
 Flask orchestrator:
   audio/text input -> whisper.cpp STT (if audio) -> LLM (OpenAI-comp. w/ tools, multi-turn ReAct)
-  -> final text response -> TTS (Kokoro-style) -> return text + audio (base64)
+  -> final text response -> TTS (Kokoro-style) -> return transcription + text + audio (base64)
 
-Rolling conversation context with configurable max tokens (approx).
+Rolling conversation context with:
+  - configurable max tokens
+  - auto-clear after N hours of inactivity (default 10h)
 """
 
 import os
@@ -14,6 +16,7 @@ import json
 import tempfile
 import subprocess
 import base64
+import datetime
 from flask import Flask, request, jsonify
 import requests
 
@@ -40,6 +43,7 @@ def load_config():
         "TOOLS_ENABLED": True,
         "TOOL_TIMEOUT": 30,
         "MAX_TOOL_TURNS": 8,
+        "CONTEXT_TIMEOUT_HOURS": 10,
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -98,7 +102,8 @@ def load_config():
         try:
             keys = ["WHISPER_BASE_URL", "WHISPER_MODEL", "LLM_BASE_URL", "LLM_MODEL",
                     "TTS_BASE_URL", "TTS_MODEL", "TTS_VOICE", "MAX_CONTEXT_TOKENS",
-                    "SYSTEM_PROMPT", "TOOLS_ENABLED", "TOOL_TIMEOUT", "MAX_TOOL_TURNS"]
+                    "SYSTEM_PROMPT", "TOOLS_ENABLED", "TOOL_TIMEOUT", "MAX_TOOL_TURNS",
+                    "CONTEXT_TIMEOUT_HOURS"]
             with open(CONFIG_PATH, "w") as f:
                 json.dump({k: cfg[k] for k in keys if k in cfg}, f, indent=2)
             print(f"✅ Saved config to {CONFIG_PATH}")
@@ -120,6 +125,9 @@ SYSTEM_PROMPT = config.get("SYSTEM_PROMPT", "You are a helpful agent.")
 TOOLS_ENABLED = bool(config.get("TOOLS_ENABLED", True))
 TOOL_TIMEOUT = int(config.get("TOOL_TIMEOUT", 30))
 MAX_TOOL_TURNS = int(config.get("MAX_TOOL_TURNS", 8))
+CONTEXT_TIMEOUT_HOURS = int(config.get("CONTEXT_TIMEOUT_HOURS", 10))
+
+last_message_time = None  # Used for auto-clearing context after long inactivity
 
 print("🐹 Marmot Agent Server ready")
 print(f"   Whisper: {WHISPER_BASE_URL}  model={WHISPER_MODEL}")
@@ -127,6 +135,7 @@ print(f"   LLM:     {LLM_MODEL} @ {LLM_BASE_URL}")
 print(f"   TTS:     {TTS_MODEL}/{TTS_VOICE} @ {TTS_BASE_URL or '(disabled)'}")
 print(f"   Context: ~{MAX_CONTEXT_TOKENS} tokens max (rolling)")
 print(f"   Tools:   {'on' if TOOLS_ENABLED else 'off'}   tool-timeout={TOOL_TIMEOUT}s")
+print(f"   Inactivity timeout: {CONTEXT_TIMEOUT_HOURS}h → auto-clear context")
 print()
 
 # ====================== TOOLS ======================
@@ -334,6 +343,16 @@ def connect():
     if not user_text:
         return jsonify({"error": "Send audio file or text"}), 400
 
+    # === Inactivity timeout check: clear context if > CONTEXT_TIMEOUT_HOURS since last message ===
+    global last_message_time
+    now = datetime.datetime.now()
+    if last_message_time is not None:
+        delta = now - last_message_time
+        if delta.total_seconds() > (CONTEXT_TIMEOUT_HOURS * 3600):
+            print(f"⏰ No messages for >{CONTEXT_TIMEOUT_HOURS} hours — clearing conversation context")
+            conversation_history.clear()
+    last_message_time = now
+
     print(f"\n👤 User: {user_text}")
     final = process_with_llm(user_text)
     print(f"🐹 Marmot: {final[:160]}{'...' if len(final) > 160 else ''}")
@@ -341,22 +360,35 @@ def connect():
     audio_b = generate_tts_audio(final)
     audio_b64 = base64.b64encode(audio_b).decode("ascii") if audio_b else None
 
-    return jsonify({"text": final, "audio": audio_b64})
+    return jsonify({
+        "transcription": user_text,
+        "text": final,
+        "audio": audio_b64
+    })
 
 @app.route("/health", methods=["GET"])
 def health():
+    now = datetime.datetime.now()
+    seconds_since_last = None
+    if last_message_time is not None:
+        seconds_since_last = int((now - last_message_time).total_seconds())
+
     return jsonify({
         "ok": True,
         "whisper": WHISPER_BASE_URL,
         "llm": LLM_MODEL,
         "tts": bool(TTS_BASE_URL),
-        "turns": len([m for m in conversation_history if m["role"] in ("user", "assistant")])
+        "turns": len([m for m in conversation_history if m["role"] in ("user", "assistant")]),
+        "context_timeout_hours": CONTEXT_TIMEOUT_HOURS,
+        "last_message_at": last_message_time.isoformat() if last_message_time else None,
+        "seconds_since_last_message": seconds_since_last
     })
 
 @app.route("/reset", methods=["POST"])
 def reset():
-    global conversation_history
+    global conversation_history, last_message_time
     conversation_history = []
+    last_message_time = None
     return jsonify({"ok": True, "msg": "context cleared"})
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ A local voice-first AI agent with tool use. Push-to-talk (or text) → STT (whis
 - Text response printed + copied to clipboard
 - `-m "text here"` client flag for quick text-only queries (no mic, exits after one response)
 - Simple Flask server with `/connect`, `/health`, `/reset`
+- Auto-clears conversation context after 10 hours of inactivity (configurable)
 
 ## Architecture
 
@@ -32,7 +33,7 @@ record (16kHz + gain + pad)  ──▶   /connect (audio or text)
                                    └──▶ TTS /v1/audio/speech
                                          (spoken reply)
                                    │
-◀── JSON {text, audio:base64} ◀──── response
+◀── JSON {transcription, text, audio:base64} ◀──── response
 ```
 
 Client plays audio, prints text, copies to clipboard.
@@ -87,8 +88,8 @@ First run prompts for Marmot server address (e.g. `localhost:5000` or remote IP)
 1. Run client
 2. Hold **Right Option (⌥)** / **Right Alt**
 3. Speak your request (can be complex, involve tools)
-4. Release → server transcribes, thinks, may use tools (e.g. check files, run commands), speaks final answer
-5. Hear response + see text + clipboard ready
+4. Release → server transcribes, thinks (with tools if needed), speaks final answer
+5. Client shows what it heard (transcription), then Marmot's reply, plays audio, and copies the reply to clipboard
 
 Examples you can say:
 - "what processes are using the most memory?"
@@ -103,6 +104,16 @@ Examples you can say:
 ./start_client.sh -m "what is the current hostname and kernel?"
 ```
 
+The client will show:
+
+```
+🐹 Sending message: ...
+🗣️  You: <your message>
+🐹 Marmot: <reply>
+```
+
+(then play audio + copy reply to clipboard)
+
 Useful for debugging without touching the mic, and for scripting.
 
 ### API
@@ -116,6 +127,7 @@ Returns:
 
 ```json
 {
+  "transcription": "what the user said (from audio or the text you sent)",
   "text": "Here is the answer...",
   "audio": "UklGRiQ...base64 wav..."   // or null
 }
@@ -170,7 +182,14 @@ curl -s -X POST http://localhost:5000/reset | jq
 
 > **Tip**: Replace `localhost:5000` with your server's address if it's running elsewhere.  
 > `jq` is recommended for readable JSON (install with `sudo apt install jq` or equivalent).  
-> If TTS is disabled on the server, the `"audio"` field will be `null`.
+> Useful fields: `.transcription` (what the user said), `.text` (Marmot's reply), `.audio` (base64 wav or null).
+
+Example to show both sides:
+```bash
+curl -s -X POST http://localhost:5000/connect \
+  -H "Content-Type: application/json" \
+  -d '{"text": "list files in ~"}' | jq '{transcription, text}'
+```
 
 ## Tool Use (ReAct style)
 
@@ -193,6 +212,7 @@ Key fields:
 - `SYSTEM_PROMPT`: customize agent personality
 - `TOOL_TIMEOUT`: seconds per `run_terminal` call (default 30)
 - `MAX_TOOL_TURNS`: safety cap on ReAct iterations (default 8)
+- `CONTEXT_TIMEOUT_HOURS`: hours of inactivity before automatically clearing conversation context (default: 10)
 
 Client: `client/code/client_config.json` (only server address + gain).
 
