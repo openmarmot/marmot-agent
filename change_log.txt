@@ -4,6 +4,11 @@ marmot-agent change log
 june 12 2026
 - created a directory for any files the agent creats.
 - readme update with instructions on starting whisper and the TTS server
+- added compaction for context
+
+i think it is currently unlikely that i will max the context, so the compaction will be untested for awhile.
+
+i did test the tool calling and the model seems quite capable of editing files with terminal commands.
 
 -----------------------
 may 31 2026

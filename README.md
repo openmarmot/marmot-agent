@@ -1,7 +1,7 @@
 # marmot-harness
 ![screenshot](/images/marmot-harness.jpg "A marmot in a climbing harness")
 
-A local voice-first AI agent with tool use.
+A local voice-first AI agent with tool use.  
 Push-to-talk (or text) → STT (whisper.cpp) → LLM with tools (ReAct/multi-turn) → TTS spoken response.
 
 ## Features
@@ -239,10 +239,6 @@ Client: `client/code/client_config.json` (only server address + gain).
 
 The `run_terminal` tool gives the LLM real shell access to your machine. Only run this against trusted local models and review what it does. Consider running the whole stack in a container or VM for experiments.
 
-## Differences from spark-dictate
-
-- spark-dictate: mostly dictation + optional one-shot "question ..." LLM query
-- marmot-agent: full agent loop with tools, multi-turn reasoning, persistent conversation, voice I/O wrapper around the agent
 
 ## License
 
