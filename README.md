@@ -47,10 +47,15 @@ Client plays audio, prints text, copies to clipboard.
 - Microphone (for hotkey mode)
 - Same clipboard tools as spark-dictate (`wl-clipboard` or `xclip` on Linux)
 
-**Servers (usually on powerful box / DGX Spark etc.):**
+**Servers (designed for NVIDIA CUDA):**
 - whisper.cpp server (CUDA) on port 8025 (or your choice)
 - OpenAI-compatible LLM server (vLLM, llama.cpp server, Ollama OpenAI compat, etc.)
 - Kokoro FastAPI or other TTS exposing `/v1/audio/speech` (optional but recommended)
+
+**LLM Endpoint:**
+- designed for local LLM endpoint using vLLM
+- openai compatible
+- tested with MiniMax M2.7 on a 2x DGX Spark Cluster
 
 ## Quick Setup
 
